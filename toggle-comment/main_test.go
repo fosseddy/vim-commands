@@ -97,7 +97,7 @@ func TestMultiLineCommentOut(t *testing.T) {
 		{7, "  A\nB\n",         "  /*A\nB*/\n"},
 		{8, "  A\n\n  \n  B\n", "  /*A\n\n  \n  B*/\n"},
 		{9, "\tA\n",            "\t/*A*/\n"},
-		{10, "\n  \n\n",               "\n  \n\n"},
+		{10, "\n  \n\n",        "\n  \n\n"},
 	}
 
 	for _, tc := range tests {
