@@ -8,18 +8,23 @@ import (
 	"log"
 )
 
-type comment struct {
+type Comment struct {
 	prefix []byte
 	suffix []byte
 	isMultiLine bool
 }
 
-type input struct {
+type Line struct {
+	buf []byte
+	isEmpty bool
+}
+
+type Input struct {
 	src []byte
 	len int
-	lines [][]byte
+	lines []Line
 	lineCount int
-	smallestIndentLevel int
+	indentLevel int
 	isUncommenting bool
 }
 
@@ -28,10 +33,10 @@ func main() {
 	argslen := len(args)
 
 	if argslen < 1 {
-		log.Fatalf("need at least 1 argument\n")
+		log.Fatalln("need at least 1 argument")
 	}
 
-	comment := comment{
+	comment := Comment{
 		prefix: []byte(args[0]),
 		isMultiLine: false,
 	}
@@ -46,57 +51,64 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	input := parseInput(src, &comment)
-	output := []byte{}
+	var (
+		input Input
+		output []byte
+	)
+
+	parseInput(&input, src, &comment)
 
 	if input.isUncommenting {
 		output = make([]byte, 0, input.len)
 
 		if comment.isMultiLine {
-			output = uncommentMultiLine(output, input, &comment)
+			output = uncommentMultiLine(output, &input, &comment)
 		} else {
-			output = uncommentSingleLine(output, input, &comment)
+			output = uncommentSingleLine(output, &input, &comment)
 		}
 	} else {
 		output = make([]byte, 0, input.len * 3)
 
 		if comment.isMultiLine {
-			output = commentOutMultiLine(output, input, &comment)
+			output = commentOutMultiLine(output, &input, &comment)
 		} else {
-			output = commentOutSingleLine(output, input, &comment)
+			output = commentOutSingleLine(output, &input, &comment)
 		}
 	}
 
 	fmt.Print(string(output))
 }
 
-func parseInput(src []byte, comment *comment) *input {
-	input := &input{
-		src: src,
-		len: len(src),
-		smallestIndentLevel: -1,
-		isUncommenting: true,
-	}
+func parseInput(input *Input, src []byte, comment *Comment) {
+	input.src = src
+	input.len = len(src)
+	input.indentLevel = -1
+	input.isUncommenting = true
 
 	pad := 0
-	line := make([]byte, 0, 80)
+	line := Line{make([]byte, 0, 80), false}
 	isLineStart := true
 	isModeSet := false
 
 	for i := 0; i < input.len; i++ {
 		if isLineStart {
 			for input.src[i] == ' ' || input.src[i] == '\t' {
-				line = append(line, input.src[i])
+				line.buf = append(line.buf, input.src[i])
 				pad++
 				i++
 			}
 
-			if !isModeSet {
+			if input.src[i] == '\n' {
+				line.isEmpty = true
+				pad--
+			}
+
+			if !isModeSet && !line.isEmpty {
 				if comment.isMultiLine {
 					input.isUncommenting = bytes.HasPrefix(input.src[i:], comment.prefix)
 					isModeSet = true
 				} else {
-					// if at least one line is not commented out then we are not uncommenting
+					// if at least one line is not a comment then we are commenting out
 					if !bytes.HasPrefix(input.src[i:], comment.prefix) {
 						input.isUncommenting = false
 						isModeSet = true
@@ -107,15 +119,15 @@ func parseInput(src []byte, comment *comment) *input {
 			isLineStart = false
 		}
 
-		line = append(line, input.src[i])
+		line.buf = append(line.buf, input.src[i])
 
 		if input.src[i] == '\n' {
-			if input.smallestIndentLevel == -1 {
-				input.smallestIndentLevel = pad
+			if input.indentLevel == -1 {
+				input.indentLevel = pad
 			} else {
 				if !comment.isMultiLine {
-					if pad < input.smallestIndentLevel {
-						input.smallestIndentLevel = pad
+					if pad < input.indentLevel && !line.isEmpty {
+						input.indentLevel = pad
 					}
 				}
 			}
@@ -123,27 +135,31 @@ func parseInput(src []byte, comment *comment) *input {
 			input.lines = append(input.lines, line)
 
 			pad = 0
-			line = make([]byte, 0, 80)
+			line = Line{make([]byte, 0, 80), false}
 			isLineStart = true
 		}
 	}
 
 	input.lineCount = len(input.lines)
-
-	return input
 }
 
-func commentOutMultiLine(output []byte, input *input, comment *comment) []byte {
+func commentOutMultiLine(output []byte, input *Input, comment *Comment) []byte {
 	isPrefixInserted := false
+	lastLine := findLastNonEmptyLine(input.lines)
 
 	for lineNum, line := range input.lines {
-		for i, ch := range line {
-			if !isPrefixInserted && i == input.smallestIndentLevel {
+		if line.isEmpty {
+			output = append(output, line.buf...)
+			continue
+		}
+
+		for i, ch := range line.buf {
+			if !isPrefixInserted && i == input.indentLevel {
 				output = append(output, comment.prefix...)
 				isPrefixInserted = true
 			}
 
-			if lineNum == input.lineCount - 1 && ch == '\n' {
+			if lineNum == lastLine && ch == '\n' {
 				output = append(output, comment.suffix...)
 			}
 
@@ -154,32 +170,53 @@ func commentOutMultiLine(output []byte, input *input, comment *comment) []byte {
 	return output
 }
 
-func uncommentMultiLine(output []byte, input *input, comment *comment) []byte {
+func uncommentMultiLine(output []byte, input *Input, comment *Comment) []byte {
 	isPrefixDeleted := false
+	lastLine := findLastNonEmptyLine(input.lines)
 
 	for lineNum, line := range input.lines {
-		for i := 0; i < len(line); i++ {
-			if !isPrefixDeleted && i == input.smallestIndentLevel {
+		if line.isEmpty {
+			output = append(output, line.buf...)
+			continue
+		}
+
+		for i := 0; i < len(line.buf); i++ {
+			if !isPrefixDeleted && i == input.indentLevel {
 				i += len(comment.prefix)
 				isPrefixDeleted = true
 			}
 
-			if lineNum == input.lineCount - 1 && line[i] == '\n' {
+			if lineNum == lastLine && line.buf[i] == '\n' {
 				end := len(output) - len(comment.suffix)
 				output = output[:end]
 			}
 
-			output = append(output, line[i])
+			output = append(output, line.buf[i])
 		}
 	}
 
 	return output
 }
 
-func commentOutSingleLine(output []byte, input *input, comment *comment) []byte {
+func findLastNonEmptyLine(lines []Line) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !lines[i].isEmpty {
+			return i
+		}
+	}
+
+	return 0
+}
+
+func commentOutSingleLine(output []byte, input *Input, comment *Comment) []byte {
 	for _, line := range input.lines {
-		for i, ch := range line {
-			if i == input.smallestIndentLevel {
+		if line.isEmpty {
+			output = append(output, line.buf...)
+			continue
+		}
+
+		for i, ch := range line.buf {
+			if i == input.indentLevel {
 				output = append(output, comment.prefix...)
 			}
 			output = append(output, ch)
@@ -189,13 +226,18 @@ func commentOutSingleLine(output []byte, input *input, comment *comment) []byte 
 	return output
 }
 
-func uncommentSingleLine(output []byte, input *input, comment *comment) []byte {
+func uncommentSingleLine(output []byte, input *Input, comment *Comment) []byte {
 	for _, line := range input.lines {
-		for i := 0; i < len(line); i++ {
-			if i == input.smallestIndentLevel {
+		if line.isEmpty {
+			output = append(output, line.buf...)
+			continue
+		}
+
+		for i := 0; i < len(line.buf); i++ {
+			if i == input.indentLevel {
 				i += len(comment.prefix)
 			}
-			output = append(output, line[i])
+			output = append(output, line.buf[i])
 		}
 	}
 
